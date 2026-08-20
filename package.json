@@ -7,14 +7,16 @@
     "node": ">=18"
   },
   "scripts": {
+    "benchmark": "tsx scripts/benchmark-strategies.ts",
     "build": "tsc -p tsconfig.json",
-    "check": "npm run build && npm test",
+    "check": "npm run build && npm run typecheck:benchmark && npm test",
     "solve": "tsx src/cli.ts",
     "solve:random": "tsx src/cli.ts random",
     "start": "node dist/cli.js",
     "test": "vitest run --exclude test/live-api.test.ts",
     "test:live": "LIVE_API=1 vitest run test/live-api.test.ts",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "typecheck:benchmark": "tsc -p tsconfig.benchmark.json"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

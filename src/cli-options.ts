@@ -1,10 +1,12 @@
 import type { GameTarget } from "./types.js";
+import { DEFAULT_PARTITION_BUDGET } from "./solver.js";
 
 export interface CliOptions {
   readonly target: GameTarget;
   readonly wordListPath?: string;
   readonly firstGuess?: string;
   readonly maxAttempts: number;
+  readonly partitionBudget: number;
   readonly baseUrl: string;
 }
 
@@ -40,6 +42,7 @@ export function parseCliOptions(
   let wordListPath: string | undefined;
   let firstGuess: string | undefined;
   let maxAttempts = 12;
+  let partitionBudget = DEFAULT_PARTITION_BUDGET;
   let baseUrl = "https://wordle.votee.dev:8000";
 
   while (args.length > 0) {
@@ -65,6 +68,9 @@ export function parseCliOptions(
       case "--max-attempts":
         maxAttempts = parsePositiveInteger(value, "max-attempts");
         break;
+      case "--partition-budget":
+        partitionBudget = parsePositiveInteger(value, "partition-budget");
+        break;
       case "--base-url":
         baseUrl = value;
         break;
@@ -89,7 +95,7 @@ export function parseCliOptions(
     target = { mode, word: word as string };
   }
 
-  const options: CliOptions = { target, maxAttempts, baseUrl };
+  const options: CliOptions = { target, maxAttempts, partitionBudget, baseUrl };
   return {
     kind: "run",
     options: {
