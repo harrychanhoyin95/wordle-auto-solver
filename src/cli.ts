@@ -19,6 +19,7 @@ Options:
   --word-list <path>     Newline- or whitespace-separated candidate list
   --first <word>         Override the first guess (must be in the word list)
   --max-attempts <n>     Stop after this many requests (default: 12)
+  --partition-budget <n> Hybrid partition comparisons per selection (default: 1500000)
   --base-url <url>       Override the Votee API base URL
   --help, -h             Show this help
 
@@ -54,9 +55,14 @@ async function main(): Promise<void> {
     `Candidates: ${answerWords.length.toLocaleString("en-US")}; ` +
       `valid guesses: ${guessWords.length.toLocaleString("en-US")}`,
   );
+  console.log(
+    `Strategy: frequency shortlist + exact partition minimax; ` +
+      `budget=${options.partitionBudget.toLocaleString("en-US")}`,
+  );
 
   const result = await solver.solve(options.target, {
     maxAttempts: options.maxAttempts,
+    partitionBudget: options.partitionBudget,
     ...(options.firstGuess === undefined ? {} : { firstGuess: options.firstGuess }),
     onProgress: ({ attempt, guess, feedback, candidatesAfter }) => {
       console.log(

@@ -30,6 +30,8 @@ describe("parseCliOptions", () => {
         "planet",
         "--max-attempts",
         "9",
+        "--partition-budget",
+        "250000",
       ],
       () => 1,
     );
@@ -41,6 +43,7 @@ describe("parseCliOptions", () => {
         wordListPath: "six.txt",
         firstGuess: "planet",
         maxAttempts: 9,
+        partitionBudget: 250_000,
         baseUrl: "https://wordle.votee.dev:8000",
       },
     });
@@ -57,6 +60,7 @@ describe("parseCliOptions", () => {
     [["daily", "--seed", "1"], /only valid in random/],
     [["word"], /requires/],
     [["random", "--size", "0"], /greater than zero/],
+    [["random", "--partition-budget", "0"], /greater than zero/],
     [["random", "--unknown", "x"], /Unknown option/],
     [["word", "apple", "--size", "4"], /cannot differ/],
   ] as const)("rejects invalid combination %#", (args, expected) => {

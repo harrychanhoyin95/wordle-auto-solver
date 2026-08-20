@@ -11,7 +11,7 @@ a real word backed by a configured dictionary.
 - the Votee daily puzzle;
 - a user-selected target word for repeatable testing;
 - exact feedback filtering, including Votee's duplicate-letter behavior;
-- minimax guess selection with deterministic tie-breaking;
+- frequency-shortlisted partition minimax with deterministic tie-breaking;
 - separate answer-candidate and exploratory-guess vocabularies;
 - precomputed 26-bit letter-presence masks for faster scoring;
 - local valid-word enforcement before every API request;
@@ -98,6 +98,7 @@ Every request also sends the current `guess`. API responses are arrays of
 | `--word-list <path>` | Custom whitespace-separated list used for both candidates and guesses |
 | `--first <word>` | First guess; must be backed by a configured dictionary |
 | `--max-attempts <n>` | Maximum API requests; default `12` |
+| `--partition-budget <n>` | Approximate candidate/guess comparisons per hybrid selection; default `1500000` |
 | `--base-url <url>` | Override the Votee API base URL |
 
 ## Solver strategy
@@ -109,23 +110,28 @@ Every request also sends the current `guess`. API responses are arrays of
    through `z` map to bits 0 through 25).
 3. Start a five-letter puzzle with `RAISE` when it is available, unless
    `--first` is supplied. For other lengths, rank the opening guess with the
-   same minimax selector used later.
+   same hybrid selector used later.
 4. Submit the guess and validate the complete Votee response, including slots,
    echoed characters, and result values.
 5. Locally reproduce that feedback for every remaining answer candidate and
    discard candidates whose full pattern differs.
-6. Partition the remaining candidates by the pattern each untried word in the
-   exploratory guess list would produce. Select the guess using these ordered
-   criteria:
+6. Compute positional-letter and letter-presence frequencies across the
+   remaining candidates. Rank all usable exploratory guesses with that cheap
+   score, then retain an adaptive shortlist. Its base size is
+   `max(512, floor(partitionBudget / candidates))`; remaining candidates that
+   are also valid guesses are always retained.
+7. Partition the candidates by the feedback pattern each shortlisted word
+   would produce. Select the guess using these ordered criteria:
    - smallest largest bucket (minimize the worst case);
    - smallest sum of squared bucket sizes (improve the expected case);
    - prefer a remaining answer candidate;
    - alphabetical order for deterministic final ties.
-7. When at most two candidates remain, try the first unguessed answer candidate
-   directly, even when it is outside the narrower exploratory list. Otherwise,
-   the minimax choice may be a valid exploratory word that is no longer a
-   possible answer.
-8. Repeat until every slot is `correct` or the attempt limit is reached.
+   When 100 or fewer candidates remain, use the complete valid-guess pool for
+   exact full-pool minimax instead of a shortlist.
+8. Only when exactly one candidate remains, try that isolated answer directly,
+   even when it is outside the narrower exploratory list. With two or more
+   candidates, the hybrid choice must remain in the valid exploratory pool.
+9. Repeat until every slot is `correct` or the attempt limit is reached.
 
 With the current bundled lists, the selected target `APPLE` is solved in five
 requests:
@@ -136,21 +142,28 @@ RAISE -> ALANT -> GUMBO -> ADDLE -> APPLE
 
 ### Complexity
 
-Mask construction is `O((A + G) x L)`. A minimax round scores `G` exploratory
-guesses against `C` remaining candidates in `O(G x C x L)`, where `A` is the
-initial answer count, `G` is the guess-pool size, and `L` is the word length.
-The bitmask makes each letter-membership check constant time; without it,
-repeatedly scanning the target would make pair scoring `O(L^2)`.
+Mask construction is `O((A + G) x L)`, where `A` is the initial answer count,
+`G` is the guess-pool size, and `L` is the word length. For `C` remaining
+candidates, frequency ranking costs `O((C + G) x L + G log G)`. Exact
+partition scoring then costs `O(K x C x L)`, where `K` is the adaptive
+shortlist size and is at most `G`.
+
+With the default budget and more than 100 candidates, `K` is approximately
+`max(512, floor(1,500,000 / C))`, capped by the available guess pool. This
+keeps the dominant `K x C` work near the configured budget until the 512-word
+minimum takes over. At 100 or fewer candidates, `K = G`, so the late-game
+worst case remains `O(G x C x L)`. The bitmask makes each letter-membership
+check constant time; without it, pair scoring would be `O(L^2)`.
 
 The implementation evaluates one guess at a time rather than storing the full
 `G x C` score matrix.
 
 ## Valid-word enforcement
 
-The solver does not use arbitrary strings as information probes. Minimax probes
+The solver does not use arbitrary strings as information probes. Hybrid probes
 come only from `data/words.txt`, the classic Wordle-valid list. A broader
 dictionary-backed answer candidate may be submitted only when filtering has
-reduced the answer set to at most two candidates. The solver checks every guess
+isolated it as the sole remaining candidate. The solver checks every guess
 against the union of these configured dictionaries immediately before calling
 the API. This also covers the default opener and a user-provided `--first`
 value; an unsupported first guess fails locally without sending a request.
@@ -181,7 +194,7 @@ remove the actual answer after duplicate-letter feedback.
 - The Votee API exposes no vocabulary-list or answer-disclosure endpoint.
   Combining the classic Wordle list with a broader English dictionary reduces
   unknown-vocabulary failures, but cannot mathematically eliminate them.
-- The minimax strategy improves worst-case partitions but does **not** prove a
+- The hybrid strategy optimizes the shortlisted partitions but does **not** prove a
   universal six-guess guarantee. Such a guarantee would require the exact
   server answer vocabulary and exhaustive evaluation of every answer.
 - Live behavior depends on the availability and contract of the Votee service.
@@ -206,22 +219,38 @@ Run the opt-in live integration tests (these make real HTTP requests):
 npm run test:live
 ```
 
-The deterministic suite contains 38 tests covering feedback and
+Compare the production hybrid strategy against an exhaustive full-pool minimax
+baseline without making network requests:
+
+```bash
+npm run benchmark -- --sample 30 --seed 20260820 --max-attempts 6 --budget 1500000
+```
+
+The benchmark uses the complete bundled dictionaries for every simulated solve,
+while the deterministic sample controls which answers are measured. It reports
+selector CPU time, attempt distribution, six-attempt solve rate, shortlist size,
+and per-answer quality regressions. The benchmark imports the production
+shortlist implementation directly so its hybrid path cannot drift from runtime.
+
+The deterministic suite contains 94 tests covering feedback and
 duplicate-letter combinations, separate candidate/guess pools, minimax
-selection, 26-bit masks, all three API modes, stable-seed reuse, custom options
+and hybrid selection, 26-bit masks, all three API modes, stable-seed reuse, custom options
 and dictionaries, strict guess allowlisting, malformed responses, HTTP
-failures, and attempt limits. Three opt-in live tests cover Votee's duplicate
-behavior, seed 42, and the seed `2015760431` `JANET` regression.
+failures, and attempt limits. This includes 50 production-readiness cases
+written independently across ten focused test suites. Three opt-in live tests
+cover Votee's duplicate behavior, seed 42, and the seed `2015760431` `JANET`
+regression.
 
 ## Project layout
 
 ```text
 src/api.ts          Typed Votee client, retries, and response validation
 src/feedback.ts     Votee-compatible scoring, pattern keys, and bitmasks
-src/solver.ts       Candidate filtering, minimax selection, and solve loop
+src/solver.ts       Candidate filtering, hybrid selection, and solve loop
 src/word-list.ts    Bundled or custom dictionary loading
 src/cli-options.ts  Command-line parsing and validation
 src/cli.ts          Terminal entry point
+scripts/            Offline full-minimax versus hybrid benchmark
 test/               Unit and opt-in live integration tests
 data/answers.txt    Broader bundled five-letter answer-candidate list
 data/words.txt      Classic Wordle-valid exploratory guess list

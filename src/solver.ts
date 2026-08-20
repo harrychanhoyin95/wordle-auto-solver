@@ -18,8 +18,19 @@ export interface SolverProgress {
 export interface SolverOptions {
   readonly firstGuess?: string;
   readonly maxAttempts?: number;
+  readonly partitionBudget?: number;
   readonly onProgress?: (progress: SolverProgress) => void;
 }
+
+export interface HybridSelectionOptions {
+  readonly partitionBudget?: number;
+  readonly fullScanThreshold?: number;
+  readonly minimumShortlistSize?: number;
+}
+
+export const DEFAULT_PARTITION_BUDGET = 1_500_000;
+export const DEFAULT_FULL_SCAN_THRESHOLD = 100;
+export const DEFAULT_MINIMUM_SHORTLIST_SIZE = 512;
 
 export interface SolveResult {
   readonly answer: string;
@@ -67,10 +78,20 @@ export class WordleSolver {
     if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1) {
       throw new SolverError("maxAttempts must be a positive integer.");
     }
+    const partitionBudget = options.partitionBudget ?? DEFAULT_PARTITION_BUDGET;
+    if (!Number.isSafeInteger(partitionBudget) || partitionBudget < 1) {
+      throw new SolverError("partitionBudget must be a positive integer.");
+    }
 
     const attempted = new Set<string>();
     const history: SolverProgress[] = [];
-    let nextGuess = this.chooseFirstGuess(candidates, guessPool, size, options.firstGuess);
+    let nextGuess = this.chooseFirstGuess(
+      candidates,
+      guessPool,
+      size,
+      partitionBudget,
+      options.firstGuess,
+    );
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       if (!this.allowedGuesses.has(nextGuess)) {
@@ -117,7 +138,13 @@ export class WordleSolver {
         );
       }
 
-      nextGuess = chooseInformativeCandidate(candidates, attempted, guessPool, this.wordMasks);
+      if (attempt === maxAttempts) {
+        break;
+      }
+
+      nextGuess = chooseHybridCandidate(candidates, attempted, guessPool, this.wordMasks, {
+        partitionBudget,
+      });
     }
 
     throw new SolverError(`Could not solve the puzzle within ${maxAttempts} attempts.`);
@@ -127,6 +154,7 @@ export class WordleSolver {
     candidates: readonly string[],
     guessPool: readonly string[],
     size: number,
+    partitionBudget: number,
     requested?: string,
   ): string {
     if (requested !== undefined) {
@@ -145,8 +173,92 @@ export class WordleSolver {
     if (size === 5 && guessPool.includes("raise")) {
       return "raise";
     }
-    return chooseInformativeCandidate(candidates, new Set(), guessPool, this.wordMasks);
+    return chooseHybridCandidate(candidates, new Set(), guessPool, this.wordMasks, {
+      partitionBudget,
+    });
   }
+}
+
+export function chooseHybridCandidate(
+  candidates: readonly string[],
+  attempted: ReadonlySet<string>,
+  guessPool: readonly string[] = candidates,
+  precomputedMasks: ReadonlyMap<string, LetterMask> = precomputeLetterMasks([
+    ...new Set([...candidates, ...guessPool]),
+  ]),
+  options: HybridSelectionOptions = {},
+): string {
+  const availableCandidates = candidates.filter((word) => !attempted.has(word));
+  const firstCandidate = availableCandidates[0];
+  if (firstCandidate === undefined) {
+    throw new SolverError("There are no untried candidates left.");
+  }
+  if (availableCandidates.length === 1) return firstCandidate;
+
+  const shortlist = buildFrequencyShortlist(
+    availableCandidates,
+    attempted,
+    guessPool,
+    precomputedMasks,
+    options,
+  );
+  return chooseInformativeCandidate(availableCandidates, attempted, shortlist, precomputedMasks);
+}
+
+export function buildFrequencyShortlist(
+  candidates: readonly string[],
+  attempted: ReadonlySet<string>,
+  guessPool: readonly string[],
+  precomputedMasks: ReadonlyMap<string, LetterMask>,
+  options: HybridSelectionOptions = {},
+): string[] {
+  const partitionBudget = positiveSelectionOption(
+    options.partitionBudget ?? DEFAULT_PARTITION_BUDGET,
+    "partitionBudget",
+  );
+  const fullScanThreshold = nonNegativeSelectionOption(
+    options.fullScanThreshold ?? DEFAULT_FULL_SCAN_THRESHOLD,
+    "fullScanThreshold",
+  );
+  const minimumShortlistSize = positiveSelectionOption(
+    options.minimumShortlistSize ?? DEFAULT_MINIMUM_SHORTLIST_SIZE,
+    "minimumShortlistSize",
+  );
+  const guessSet = new Set(guessPool);
+  const availableGuesses = guessPool.filter(
+    (guess) => !attempted.has(guess) && guess.length === candidates[0]?.length,
+  );
+  if (candidates.length <= fullScanThreshold) return availableGuesses;
+
+  const wordLength = candidates[0]?.length ?? 0;
+  const positional = Array.from({ length: wordLength }, () => new Uint32Array(26));
+  const presence = new Uint32Array(26);
+
+  for (const candidate of candidates) {
+    for (let slot = 0; slot < candidate.length; slot += 1) {
+      const index = candidate.charCodeAt(slot) - 97;
+      const counts = positional[slot];
+      if (counts !== undefined) counts[index] = (counts[index] ?? 0) + 1;
+    }
+    const mask = precomputedMasks.get(candidate) ?? 0;
+    for (let index = 0; index < 26; index += 1) {
+      if ((mask & (1 << index)) !== 0) presence[index] = (presence[index] ?? 0) + 1;
+    }
+  }
+
+  const adaptiveSize = Math.min(
+    availableGuesses.length,
+    Math.max(minimumShortlistSize, Math.floor(partitionBudget / candidates.length)),
+  );
+  const ranked = availableGuesses
+    .map((guess) => ({ guess, score: frequencyScore(guess, positional, presence) }))
+    .sort((left, right) => right.score - left.score || left.guess.localeCompare(right.guess));
+  const shortlist = new Set(ranked.slice(0, adaptiveSize).map(({ guess }) => guess));
+
+  for (const candidate of candidates) {
+    if (guessSet.has(candidate) && !attempted.has(candidate)) shortlist.add(candidate);
+  }
+  return [...shortlist];
 }
 
 export function chooseInformativeCandidate(
@@ -160,7 +272,7 @@ export function chooseInformativeCandidate(
   if (firstCandidate === undefined) {
     throw new SolverError("There are no untried candidates left.");
   }
-  if (availableCandidates.length <= 2) {
+  if (availableCandidates.length === 1) {
     return firstCandidate;
   }
 
@@ -218,6 +330,39 @@ export function chooseInformativeCandidate(
     throw new SolverError("There are no usable guesses left in the guess pool.");
   }
   return bestGuess;
+}
+
+function frequencyScore(
+  word: string,
+  positional: readonly Uint32Array[],
+  presence: Uint32Array,
+): number {
+  let score = 0;
+  let seen = 0;
+  for (let slot = 0; slot < word.length; slot += 1) {
+    const index = word.charCodeAt(slot) - 97;
+    score += (positional[slot]?.[index] ?? 0) * 2;
+    const bit = 1 << index;
+    if ((seen & bit) === 0) {
+      score += presence[index] ?? 0;
+      seen |= bit;
+    }
+  }
+  return score;
+}
+
+function positiveSelectionOption(value: number, name: string): number {
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new SolverError(`${name} must be a positive integer.`);
+  }
+  return value;
+}
+
+function nonNegativeSelectionOption(value: number, name: string): number {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new SolverError(`${name} must be a non-negative integer.`);
+  }
+  return value;
 }
 
 function normalizeWords(words: readonly string[]): string[] {
