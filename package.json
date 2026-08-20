@@ -1,0 +1,25 @@
+{
+  "name": "votee-wordle-auto-solver",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "npm run build && npm test",
+    "solve": "tsx src/cli.ts",
+    "solve:random": "tsx src/cli.ts random",
+    "start": "node dist/cli.js",
+    "test": "vitest run --exclude test/live-api.test.ts",
+    "test:live": "LIVE_API=1 vitest run test/live-api.test.ts",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  }
+}
